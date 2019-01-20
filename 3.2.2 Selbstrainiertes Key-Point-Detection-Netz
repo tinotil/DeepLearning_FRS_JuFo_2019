@@ -1,0 +1,145 @@
+import numpy as np
+import skimage.io as io
+import matplotlib.pyplot as plt
+import glob
+import os
+
+
+from keras.models import Sequential
+from keras import applications
+from keras import applications
+from keras import optimizers
+from keras.models import Sequential
+from keras.models import Model
+from keras.preprocessing import image
+from keras import backend as keras
+from keras.callbacks import ModelCheckpoint
+from keras.layers import (Input,Activation, Dense,AveragePooling2D, Convolution2D, Dropout,
+Flatten, Input, MaxPooling2D, ZeroPadding2D, BatchNormalization)
+from keras import optimizers
+
+'''
+Generieren der Trainings-Daten (als Numpy Array)
+'''
+def numpyTrain(image_folder, mask_folder):     
+    image_arr = []
+    mask_arr  = []
+    crop_arr  = []  
+
+    img_list = os.listdir(image_folder)
+    img_list = sorted(img_list)
+    for item in img_list:
+        img_path = os.path.join(image_folder, item)
+        img = image.load_img(img_path, target_size=(128,128), grayscale = True)        
+        x = image.img_to_array(img)
+        x = x/255
+        x = np.expand_dims(x, axis=0)
+        
+        image_arr.append(x)
+        
+    mask_list = os.listdir(mask_folder)
+    mask_list = sorted(mask_list)
+    for item in mask_list:
+        mask_path = os.path.join(mask_folder, item)
+        mask = image.load_img(mask_path, target_size=(400,400))
+        x = image.img_to_array(mask)
+        x=x/255
+        x[x!=1] = 0        
+        x = np.expand_dims(x, axis=0)
+        mask_arr.append(x)
+     
+    image_arr = np.concatenate(image_arr, axis=0)   
+    mask_arr = np.concatenate(mask_arr, axis=0) 
+    print(image_arr.shape)
+    
+    
+
+    output_Mask = [] 
+    c = 0
+    for mask in mask_arr:        
+            
+            m = mask[:,:,0]-1
+            m = m*m
+            m = m / np.sum(np.sum(m))
+            dx = np.sum(m, 1)
+            dy = np.sum(m, 0)
+            cx = np.sum(dx * np.arange(400))/400
+            cy = np.sum(dy * np.arange(400))/400
+            bmask = [cx,cy]   
+                    #i = int(bmask[0])  
+            c=c+1
+            output_Mask.append(bmask)
+    
+    output_Mask=np.asarray(output_Mask) 
+    
+    return image_arr, output_Mask        
+trainImg, trainMask = numpyTrain('/home/constantin/NeuralNetworks/Classifier/RawImport/Train/Image',
+                                 '/home/constantin/NeuralNetworks/Classifier/RawImport/Train/Mask')
+validImg, validMask = numpyTrain('/home/constantin/NeuralNetworks/Classifier/RawImport/Validation/Image',
+                                 '/home/constantin/NeuralNetworks/Classifier/RawImport/Validation/Mask')
+
+'''
+Anzeigen zweier Trainings-Bilder mit dazugehörigem Sella-Punkt
+'''
+for i in range(2):
+    print(i)
+    img = trainImg[i]
+    mask = trainMask[i]
+    print(mask)
+    io.imshow(img[:,:,0])
+    plt.show()
+    
+    mask_show = np.ones_like(img[:,:,0])
+    mask_show[int(mask[0]*128),int(mask[1]*128)] = 0
+    io.imshow(mask_show+img[:,:,0])
+    plt.show()
+    
+
+'''
+Initialisierung des Netzes
+'''
+dropout = 0.1
+model = Sequential()
+
+model.add(BatchNormalization(input_shape=(128, 128, 1)))
+
+model.add(Convolution2D(24, 5, 5, border_mode= 'same', init='he_normal', input_shape=(128, 128, 1)))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), border_mode='valid'))
+#model.add(Dropout(dropout))
+model.add(BatchNormalization())
+    
+model.add(Convolution2D(36, 5, 5))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), border_mode='valid'))
+#model.add(Dropout(dropout))
+model.add(BatchNormalization())
+model.add(Convolution2D(48, 5, 5))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), border_mode='valid'))
+#model.add(Dropout(dropout))
+model.add(BatchNormalization())
+model.add(Convolution2D(64, 3, 3))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), border_mode='valid'))
+#model.add(Dropout(dropout))
+model.add(BatchNormalization())
+model.add(Convolution2D(64, 3, 3))
+model.add(Activation('relu'))
+#model.add(Dropout(dropout))
+model.add(Flatten());
+
+model.add(Dense(500, activation='relu'))
+model.add(Dropout(dropout))
+model.add(Dense(100, activation='relu'))
+model.add(Dropout(dropout))
+model.add(Dense(2))
+adam = optimizers.Adam(lr=0.002)
+model.compile(loss="mean_absolute_error",
+              optimizer=adam,
+              metrics = ['mean_absolute_error'])
+
+
+model_checkpoint = ModelCheckpoint('classfier_finetune.h5', monitor='loss',verbose=1, save_best_only=True)
+history= model.fit(trainImg,trainMask, epochs = 30,batch_size =2, shuffle = True,
+          validation_data = (validImg,validMask))
