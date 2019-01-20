@@ -1,0 +1,158 @@
+import skimage.io as io
+from skimage.filters import *
+import skimage.transform as trans
+import matplotlib.pyplot as plt
+from random import randint
+
+import numpy as np
+import glob
+import os
+import matplotlib.pyplot as plt
+from keras.preprocessing.image import ImageDataGenerator
+from keras.layers import Input
+from keras.models import Model
+from keras.layers import Dense, GlobalAveragePooling2D
+from keras import applications
+from keras.layers import *
+
+def find(l, elem):
+    l = l.tolist()
+    for row, i in enumerate(l):
+        try:
+            column = i.index(elem)
+        except ValueError:
+            continue
+        return row, column 
+
+'''
+Auslesen aller bisher analysierten Sella-Punkt-Positionen (Trainings-Datensatz)
+'''
+def sella_positions():    
+    mask_path = '/home/constantin/NeuralNetworks/Classifier/RawImport/Train/Mask'
+    mask_prefix="FRS"
+    mask_name_arr  = glob.glob(os.path.join(mask_path,"%s*.png"%mask_prefix)) 
+    mask_name_arr = sorted(mask_name_arr)
+    image_arr = []
+    mask_arr  = []
+    crop_arr  = []      
+    img_size = 750
+    plotmask = np.zeros((img_size,img_size))
+    s_pos_array =[]
+    for item in mask_name_arr:
+        mask = io.imread(item)
+        mask = mask / 255
+        mask = trans.resize(mask, (img_size, img_size), mode='constant', preserve_range=True)
+        if(mask.ndim ==3): mask = mask[:,:,0]
+        mask[mask != 1] = 0
+        s_pos = find(mask,0)
+        s_pos_array.append(s_pos)
+        plotmask = plotmask+mask
+
+        
+    plotmask=plotmask-1
+    plotmask = plotmask*plotmask        
+    io.imshow(plotmask, cmap = "gray")
+    plt.show()
+    np.save("s_pos_array.npy", s_pos_array)
+    return np.array(s_pos_array)
+'''
+Teilbilder ohne Daten der bisher analysierten Sella-Punkte ("Normales" Sliding Window)
+'''
+def getWindow(img):
+    rect_size=(150,150)
+    shiftX = img.shape[0]/rect_size[0]
+    print(rect_size)
+    shiftX = int(shiftX - (shiftX%1))
+    shiftY = img.shape[1]/rect_size[1]
+    shiftY = int(shiftY - (shiftY%1))
+    subImageArr = []
+    for ix in range(shiftX):
+        for iy in range(shiftY):
+            posX=ix*rect_size[0]
+            posY=iy*rect_size[1]
+            subImage = img[posY:posY+rect_size[0],posX:posX+rect_size[1],:]            
+            subImageArr.append(subImage)
+    for ix in range(shiftX-1):
+        for iy in range(shiftY-1):
+            posX=int(ix*rect_size[0]+0.5*rect_size[0])
+            posY=int(iy*rect_size[1]+0.5*rect_size[1])
+            subImage = img[posY:posY+rect_size[0],posX:posX+rect_size[1],:]            
+            subImageArr.append(subImage)
+    return np.array(subImageArr)
+'''
+Erzeugen der Teilbilder an den ausgelesenen bisher analysierten Sella-Punkt-Koordinaten
+'''
+def getIntelligentWindow (img, pos_array):
+    rect_size=(150,150)
+    intelligent_subImageArr = []
+    for pos in pos_array:
+        posX=pos[1]
+        posY=pos[0]
+        intsubImage = img[posY:posY+rect_size[0],posX:posX+rect_size[1],:]         
+        intelligent_subImageArr.append(intsubImage)
+    return np.array(intelligent_subImageArr)
+#sella_positions()
+s_pos_array = np.load("s_pos_array.npy")
+from keras.preprocessing import image
+from skimage import exposure
+input_img = io.imread('/home/constantin/NeuralNetworks/Classifier/RawImport/Test/Image/FRS (3).BMP')
+input_img = input_img/255             
+input_img = trans.resize(input_img, (750, 750,3), mode='constant', preserve_range=True)
+io.imshow(input_img[:,:,:])
+plt.show()
+print(input_img.shape)
+
+
+intelligent_images = getIntelligentWindow(input_img, s_pos_array)
+print(intelligent_images.shape)
+for c, img in enumerate(intelligent_images):
+    _img= exposure.equalize_hist(img) 
+    io.imsave("/home/constantin/NeuralNetworks/Classifier/Temp/%s.png"%c,_img)
+outputs= []
+test_image_arr = []
+from keras.models import *
+model = load_model("classifier_final_histEq.h5")
+'''
+Vorhersagen des Klassifikations-Netzes:
+'''
+for c, img in enumerate(intelligent_images):
+    test_image = image.load_img("/home/constantin/NeuralNetworks/Classifier/Temp/%s.png"%c,target_size = (150,150), grayscale = True)
+    test_image = image.img_to_array(test_image)
+    test_image = test_image/255   
+    test_image_arr.append(test_image)
+    test_image = np.expand_dims(test_image, axis = 0)
+    result=model.predict(test_image)
+    outputs.append(result)
+    
+'''
+Auswahl des Teilbildes, welches als am "Sella-artigsten" bewertet wurde (größter Output-Wert)
+'''
+outputs = np.array(outputs)
+test_image_arr = np.array(test_image_arr)
+max_index=np.where(outputs==max)
+best_img = test_image_arr[max_index[0]]
+
+
+io.imshow(best_img[0,:,:,0])
+plt.show()
+
+'''
+Vorhersagen des Key-Point-Detection-Netzes auf Basis des ausgewählten Teilbildes:
+'''
+model2 = load_model("Segmentator_Sella_150.h5")
+end_result = model2.predict(best_img)
+
+'''
+Präsentation der Ergebnisse auf Sella-Teilbild und gesamtem FRS:
+'''
+mask_show = np.ones((150,150))
+mask_show[int(end_result[0,0]*150),int(end_result[0,1]*150)] = 0
+io.imshow(mask_show+best_img[0,:,:,0])
+plt.show()
+mask_show_whole = np.zeros((750,750,3))
+posX_whole =int(s_pos_array[max_index[0],1]+int(end_result[0,1]*150))
+posY_whole =int(s_pos_array[max_index[0],0]+int(end_result[0,0]*150))
+point_size = 4
+mask_show_whole[(posY_whole-point_size):(posY_whole+point_size),posX_whole-point_size:posX_whole+point_size,0] = 255
+io.imshow(input_img+mask_show_whole)
+plt.show()
