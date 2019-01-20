@@ -1,0 +1,87 @@
+import skimage.io as io
+import matplotlib.pyplot as plt
+
+from keras import applications
+from keras.preprocessing.image import ImageDataGenerator
+from keras import optimizers
+from keras.models import Sequential
+from keras.models import Model
+from keras.layers import Input
+from keras.callbacks import ModelCheckpoint
+from keras.layers import(Activation, Dense,
+ Dropout, Flatten, BatchNormalization, MaxPooling2D,
+Convolution2D,Input, GlobalAveragePooling2D)
+
+
+img_width, img_height = 150, 150
+
+train_data_dir = '/home/constantin/NeuralNetworks/Classifier/Augmentated/TrainingsData'
+validation_data_dir = '/home/constantin/NeuralNetworks/Classifier/Augmentated/ValidationData'
+nb_train_samples = 656
+nb_validation_samples = 200
+epochs = 50
+batch_size = 15
+'''
+Initialisieren des Klassifizierungs-Netzes
+'''
+input_tensor = Input(shape=(150,150,3))
+model = Sequential()
+model.add(BatchNormalization(input_shape=(150, 150, 1)))
+
+model.add(Convolution2D(20, 5, 5, border_mode= 'same', init='he_normal', input_shape=(150, 150, 1)))
+model.add(Activation('elu'))
+model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), border_mode='same'))
+model.add(BatchNormalization())
+model.add(Dropout(0.2))
+
+
+model.add(Convolution2D(50, 5, 5))
+model.add(Activation('elu'))
+model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), border_mode='same'))
+model.add(BatchNormalization())
+model.add(Dropout(0.2))
+
+model.add(GlobalAveragePooling2D())
+
+model.add(Dense(10, activation='elu'))
+model.add(Dropout(0.2))
+model.add(Dense(1, activation = 'sigmoid'))
+
+model.summary()
+model.compile(loss='binary_crossentropy',
+              optimizer="rmsprop",
+              metrics=['accuracy'])
+
+'''
+Initialisieren der Keras- ImageGenerators
+'''
+train_datagen = ImageDataGenerator(
+    rescale=1. / 255)
+
+test_datagen = ImageDataGenerator(rescale=1. / 255)
+
+train_generator = train_datagen.flow_from_directory(
+    train_data_dir,
+    target_size=(img_height, img_width),
+    batch_size=batch_size,
+    class_mode='binary',
+    color_mode = 'grayscale')
+
+validation_generator = train_datagen.flow_from_directory(
+    validation_data_dir,
+    target_size=(img_height, img_width),
+    batch_size=batch_size,
+    class_mode='binary',
+    color_mode = 'grayscale')
+
+'''
+Training des Netzes
+'''
+model_checkpoint = ModelCheckpoint('classfier_finetune.h5', monitor='loss',verbose=1, save_best_only=True)
+history = model.fit_generator(
+    train_generator,  
+    steps_per_epoch = nb_train_samples/batch_size,
+    epochs=40,
+    validation_data=validation_generator,    
+    validation_steps = nb_validation_samples/batch_size,
+    callbacks=[model_checkpoint])
