@@ -1,0 +1,205 @@
+import skimage.io as io
+import skimage.transform as trans
+from skimage import exposure
+import matplotlib.pyplot as plt
+import numpy as np
+import glob
+import os
+
+from keras.layers import *
+from keras.models import *
+from keras.preprocessing import image
+
+def find(l, elem):
+    l = l.tolist()
+    for row, i in enumerate(l):
+        try:
+            column = i.index(elem)
+        except ValueError:
+            continue
+        return row, column 
+    
+'''
+Auslesen aller bisher analysierten Sella-Punkt-Positionen (Trainings-Datensatz)
+'''    
+    
+def sella_positions():    
+    mask_path = '/home/constantin/NeuralNetworks/Classifier/RawImport/Train/Mask'
+    mask_prefix="FRS"
+    mask_name_arr  = glob.glob(os.path.join(mask_path,"%s*.png"%mask_prefix)) 
+    mask_name_arr = sorted(mask_name_arr)
+    print("Masks:")
+
+    image_arr = []
+    mask_arr  = []
+    crop_arr  = []      
+    img_size = 750
+    plotmask = np.zeros((img_size,img_size))
+    s_pos_array =[]
+    for item in mask_name_arr:
+        mask = io.imread(item)
+        mask = mask / 255
+        mask = trans.resize(mask, (img_size, img_size), mode='constant', preserve_range=True)
+        if(mask.ndim ==3): mask = mask[:,:,0]
+        mask[mask != 1] = 0
+        s_pos = find(mask,0)
+        s_pos_array.append(s_pos)
+        plotmask = plotmask+mask       
+    plotmask=plotmask-1
+    plotmask = plotmask*plotmask        
+    io.imshow(plotmask, cmap = "gray")
+    plt.show()
+    np.save("s_pos_array.npy", s_pos_array)
+    return np.array(s_pos_array)
+
+'''
+Erzeugen der Teilbilder an den ausgelesenen bisher analysierten Sella-Punkt-Koordinaten (Clipping Window)
+'''
+
+def getIntelligentWindow (img, pos_array):
+    rect_size=(150,150)
+    intelligent_subImageArr = []
+    for pos in pos_array:
+        posX=pos[1]
+        posY=pos[0]
+        intsubImage = img[posY:posY+rect_size[0],posX:posX+rect_size[1],:]         
+        intelligent_subImageArr.append(intsubImage)
+    return np.array(intelligent_subImageArr)
+
+
+s_pos_array = np.load("s_pos_array.npy")
+
+'''Einlesen des Testbildes und Preprocessing'''
+input_img = io.imread('/home/constantin/NeuralNetworks/Classifier/RawImport/Test/Image/FRS (13).BMP')
+input_img = input_img/255             
+input_img = trans.resize(input_img, (750, 750,3), mode='constant', preserve_range=True)
+
+'''Einlesen des fachärtzlich gesetzten Sella-Punktes zwecks späterer Evaluation der Vorhersage'''
+input_mask = io.imread('/home/constantin/NeuralNetworks/Classifier/RawImport/Test/Mask/FRS (13).png')
+input_mask = input_mask / 255
+input_mask = trans.resize(input_mask, (750, 750), mode='constant', preserve_range=True)
+input_mask[input_mask != 1] = 0
+input_pos = find(input_mask,0)
+
+'''Anzeigen des Testbildes'''
+io.imshow(input_img[:,:,:])
+plt.show()
+
+'''Erzeugen der Clipping Window Teilbilder'''
+intelligent_images = getIntelligentWindow(input_img, s_pos_array)
+
+'''Preprocessing der Teilbilder'''
+for c, img in enumerate(intelligent_images):
+    _img= exposure.equalize_hist(img) 
+    io.imsave("/home/constantin/NeuralNetworks/Classifier/Temp/%s.png"%c,_img)
+    
+outputs= []
+test_image_arr = []
+
+'''
+Vorhersagen des Klassifikations-Netzes für jedes Teilbild:
+'''
+
+model = load_model("classifier_final_histEq.h5")
+for c, img in enumerate(intelligent_images):
+    '''Weiteres Preprocessing'''
+    test_image = image.load_img("/home/constantin/NeuralNetworks/Classifier/Temp/%s.png"%c,target_size = (150,150), grayscale = True)
+    test_image = image.img_to_array(test_image)
+    test_image = test_image/255   
+    test_image_arr.append(test_image)
+    test_image = np.expand_dims(test_image, axis = 0)
+    '''Vorhersage des Klassifizierungsnetzes'''
+    result=model.predict(test_image)
+    outputs.append(result)
+
+outputs = np.array(outputs)
+test_image_arr = np.array(test_image_arr)
+
+'''
+Auswahl des Teilbildes, welches als am "Sella-artigsten" bewertet wurde (größter Output-Wert)
+'''
+max = np.amax(outputs)
+max_index=np.where(outputs==max)
+best_img = test_image_arr[max_index[0]]
+
+'''Anzeigen des Sella-artigsten Teilbidles'''
+io.imshow(best_img[0,:,:,0])
+plt.show()
+
+'''
+Vorhersagen des Key-Point-Detection-Netzes auf Basis des ausgewählten Teilbildes:
+'''
+model2 = load_model("Segmentator_Sella_150.h5")
+end_result = model2.predict(best_img)
+
+end_result=end_result[0]
+
+'''
+Anzeigen des Teilbildes mit Vorhersage:
+'''
+mask_show = np.ones((150,150))
+mask_show[(int(end_result[0]*150)-1):(int(end_result[0]*150)+1),(int(end_result[1]*150)-1):(int(end_result[1]*150)+1)] = 0
+io.imshow(mask_show+best_img[0,:,:,0])
+plt.show()
+
+'''
+Anzeigen des Gesamtbildes mit Vorhersage:
+'''
+
+mask_show_whole = np.zeros((750,750,3))
+posX_whole =int(s_pos_array[max_index[0][0],1]+int(end_result[1]*150))
+posY_whole =int(s_pos_array[max_index[0][0],0]+int(end_result[0]*150))
+mask_show_whole[(posY_whole-4):(posY_whole+4),posX_whole-4:posX_whole+4,0] = 255
+io.imshow(input_img+mask_show_whole)
+plt.show()
+
+'''
+Anzeigen und Berechnung des Fehlers der Vorhersage (gemittelt über x und y Richtung):
+'''
+print("LOSS ohne Prediction-Shifting:")
+error = (np.asarray((posY_whole,posX_whole))-np.asarray(input_pos))/150
+print(np.mean(np.abs(error),axis=-1))
+
+'''Durchführen des Prediciton-Shiftings'''
+print("____________________________Prediction-Shifting____________________________")
+
+'''Erzeugen des neuen Teilbildes'''
+new_image = input_img[(posY_whole - 75):(posY_whole + 75),(posX_whole - 75):(posX_whole + 75),:]
+
+'''Preprocessing des neuen Bidles'''
+new_image= exposure.equalize_hist(new_image) 
+io.imsave("/home/constantin/NeuralNetworks/Classifier/Temp/Test.png",new_image)
+new_image = image.load_img("/home/constantin/NeuralNetworks/Classifier/Temp/Test.png",target_size = (150,150), grayscale = True)
+new_image = image.img_to_array(new_image) 
+new_image = new_image/255   
+new_image = np.expand_dims(new_image, axis = 0)
+
+'''
+Vorhersagen des Key-Point-Detection-Netzes auf Basis des neuen Teilbildes (nach Prediction Shifting)
+'''
+end_result2 = model2.predict(new_image)
+
+'''
+Anzeigen des Teilbildes mit Vorhersage:
+'''
+mask_show = np.ones((150,150))
+mask_show[int(end_result2[0,0]*150),int(end_result2[0,1]*150)] = 0
+io.imshow(mask_show+new_image[0,:,:,0])
+plt.show()
+
+'''
+Anzeigen des Gesamtbildes mit Vorhersage:
+'''
+mask_show_whole = np.zeros((750,750,3))
+posX_whole2 =int((posX_whole-75)+int(end_result2[0,1]*150))
+posY_whole2 =int((posY_whole-75)+int(end_result2[0,0]*150))
+mask_show_whole[(posY_whole2-4):(posY_whole2+4),(posX_whole2-4):(posX_whole2+4),0] = 255
+io.imshow(input_img+mask_show_whole)
+plt.show()
+
+'''
+Anzeigen und Berechnung des Fehlers der Vorhersage (gemittelt über x und y Richtung):
+'''
+error = (np.asarray((posY_whole2,posX_whole2))-np.asarray(input_pos))/150
+print("LOSS mit Prediction-Shifting:")
+print(np.mean(np.abs(error),axis=-1))
